@@ -25,7 +25,6 @@ pnpm-debug.log*
 
 # testing
 coverage/
+
 packages/db/.env
 packages/db/generated/
-docs/working-agreement.md
-NEXT.md
