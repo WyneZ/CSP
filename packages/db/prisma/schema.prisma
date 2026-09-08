@@ -1,0 +1,170 @@
+// Milestone-1 scope only — see docs/adr/0002-milestone-1-schema-scope.md.
+// Five tables: Tenant, User, Site, Material, StockMovement (RECEIPT only).
+// Vendor, GoodsReceipt(+Line), Unit, MaterialUnitConversion, Requisition
+// (+Line, +StatusHistory) arrive in the milestone-2/3 migrations.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  SITE_ENGINEER
+  STOREKEEPER
+  VIEWER
+}
+
+enum SiteStatus {
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+}
+
+enum MovementType {
+  RECEIPT
+  ISSUE // unused until milestone 3 — kept now so the column never has to change type later
+}
+
+// -----------------------------------------------------------------------
+// Tenant — bootstrap record. No tenantId or createdBy/updatedBy on itself:
+// it exists before any user does. One row in v1, but every table below is
+// scoped by tenantId from day one (schema foundations, non-negotiable).
+// -----------------------------------------------------------------------
+model Tenant {
+  id              String   @id @default(uuid())
+  name            String
+  defaultCurrency String   @default("MMK")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  users     User[]
+  sites     Site[]
+  materials Material[]
+  movements StockMovement[]
+
+  @@map("tenant")
+}
+
+model User {
+  id           String  @id @default(uuid())
+  tenantId     String
+  tenant       Tenant  @relation(fields: [tenantId], references: [id])
+  name         String
+  email        String
+  passwordHash String
+  role         Role
+  isActive     Boolean @default(true)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdById String?
+  createdBy   User?    @relation("UserCreatedBy", fields: [createdById], references: [id])
+  updatedById String?
+  updatedBy   User?    @relation("UserUpdatedBy", fields: [updatedById], references: [id])
+
+  // back-relations: this user as the creator/updater of other users
+  createdUsers User[] @relation("UserCreatedBy")
+  updatedUsers User[] @relation("UserUpdatedBy")
+
+  // back-relations: this user as the creator/updater of rows on other tables
+  sitesCreated     Site[]          @relation("SiteCreatedBy")
+  sitesUpdated     Site[]          @relation("SiteUpdatedBy")
+  materialsCreated Material[]      @relation("MaterialCreatedBy")
+  materialsUpdated Material[]      @relation("MaterialUpdatedBy")
+  movementsCreated StockMovement[] @relation("MovementCreatedBy")
+
+  @@unique([tenantId, email])
+  @@map("user")
+}
+
+model Site {
+  id        String     @id @default(uuid())
+  tenantId  String
+  tenant    Tenant     @relation(fields: [tenantId], references: [id])
+  name      String
+  client    String?
+  location  String?
+  startDate DateTime?
+  endDate   DateTime?
+  status    SiteStatus @default(ACTIVE)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdById String?
+  createdBy   User?    @relation("SiteCreatedBy", fields: [createdById], references: [id])
+  updatedById String?
+  updatedBy   User?    @relation("SiteUpdatedBy", fields: [updatedById], references: [id])
+
+  movements StockMovement[]
+
+  @@unique([tenantId, name])
+  @@map("site")
+}
+
+model Material {
+  id       String  @id @default(uuid())
+  tenantId String
+  tenant   Tenant  @relation(fields: [tenantId], references: [id])
+  code     String
+  name     String
+  category String?
+
+  // milestone-1 simplification (ADR-0002) — becomes baseUnitId (FK to a
+  // real Unit table) in the milestone-2 migration, once conversion matters.
+  unit String
+
+  reorderLevel Decimal? @db.Decimal(14, 3)
+  standardRate Decimal? @db.Decimal(14, 2)
+  currency     String   @default("MMK")
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdById String?
+  createdBy   User?    @relation("MaterialCreatedBy", fields: [createdById], references: [id])
+  updatedById String?
+  updatedBy   User?    @relation("MaterialUpdatedBy", fields: [updatedById], references: [id])
+
+  movements StockMovement[]
+
+  @@unique([tenantId, code])
+  @@map("material")
+}
+
+// -----------------------------------------------------------------------
+// StockMovement — append-only ledger. No updatedAt / updatedById, no soft
+// delete: a mistake is corrected by posting a new row (reversalOfId), never
+// by editing this one. RECEIPT only until milestone 3 adds Requisition and
+// ISSUE starts getting used.
+// -----------------------------------------------------------------------
+model StockMovement {
+  id       String @id @default(uuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  siteId       String
+  site         Site         @relation(fields: [siteId], references: [id])
+  materialId   String
+  material     Material     @relation(fields: [materialId], references: [id])
+  movementType MovementType
+  quantity     Decimal      @db.Decimal(14, 3)
+
+  reversalOfId String?
+  reversalOf   StockMovement?  @relation("MovementReversal", fields: [reversalOfId], references: [id])
+  reversedBy   StockMovement[] @relation("MovementReversal")
+
+  remarks String?
+
+  createdAt   DateTime @default(now())
+  createdById String?
+  createdBy   User?    @relation("MovementCreatedBy", fields: [createdById], references: [id])
+
+  // current stock = SUM(quantity) WHERE tenantId/siteId/materialId match —
+  // this index is what makes that read fast.
+  @@index([tenantId, siteId, materialId])
+  @@map("stock_movement")
+}

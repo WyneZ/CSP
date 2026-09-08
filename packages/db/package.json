@@ -1,0 +1,26 @@
+{
+  "name": "@csp-erp/db",
+  "version": "0.0.0",
+  "private": true,
+  "main": "src/index.ts",
+  "scripts": {
+    "generate": "prisma generate",
+    "migrate:dev": "prisma migrate dev",
+    "studio": "prisma studio",
+    "db:seed": "ts-node --transpile-only prisma/seed.ts"
+  },
+  "prisma": {
+    "seed": "ts-node --transpile-only prisma/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.20.0",
+    "bcrypt": "^5.1.1"
+  },
+  "devDependencies": {
+    "prisma": "^5.20.0",
+    "typescript": "^5.6.0",
+    "ts-node": "^10.9.2",
+    "@types/node": "^22.0.0",
+    "@types/bcrypt": "^5.0.2"
+  }
+}

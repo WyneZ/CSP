@@ -1,0 +1,12 @@
+packages:
+  - apps/*
+  - packages/*
+
+ignoredBuiltDependencies:
+  - '@parcel/watcher'
+  - '@prisma/engines'
+  - unrs-resolver
+
+onlyBuiltDependencies:
+  - '@prisma/client'
+  - prisma
