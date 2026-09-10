@@ -1,7 +1,9 @@
-// Milestone-1 scope only — see docs/adr/0002-milestone-1-schema-scope.md.
-// Five tables: Tenant, User, Site, Material, StockMovement (RECEIPT only).
-// Vendor, GoodsReceipt(+Line), Unit, MaterialUnitConversion, Requisition
-// (+Line, +StatusHistory) arrive in the milestone-2/3 migrations.
+// Milestone-1 scope — see docs/adr/0002-milestone-1-schema-scope.md.
+// Milestone-2/3 addition (2026-09-10, under time pressure — see NEXT.md):
+// Vendor, Requisition, RequisitionLine, and the StockMovement link to a
+// requisition line. GoodsReceipt/Unit/MaterialUnitConversion still deferred
+// past v1 — "Store In" stays a plain RECEIPT ledger row with no PO/GRN
+// document behind it yet.
 
 generator client {
   provider = "prisma-client-js"
@@ -27,7 +29,17 @@ enum SiteStatus {
 
 enum MovementType {
   RECEIPT
-  ISSUE // unused until milestone 3 — kept now so the column never has to change type later
+  ISSUE
+}
+
+enum RequisitionStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  PARTIALLY_ISSUED
+  ISSUED
+  REJECTED
+  CANCELLED
 }
 
 // -----------------------------------------------------------------------
@@ -42,10 +54,12 @@ model Tenant {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  users     User[]
-  sites     Site[]
-  materials Material[]
-  movements StockMovement[]
+  users        User[]
+  sites        Site[]
+  materials    Material[]
+  movements    StockMovement[]
+  vendors      Vendor[]
+  requisitions Requisition[]
 
   @@map("tenant")
 }
@@ -72,11 +86,19 @@ model User {
   updatedUsers User[] @relation("UserUpdatedBy")
 
   // back-relations: this user as the creator/updater of rows on other tables
-  sitesCreated     Site[]          @relation("SiteCreatedBy")
-  sitesUpdated     Site[]          @relation("SiteUpdatedBy")
-  materialsCreated Material[]      @relation("MaterialCreatedBy")
-  materialsUpdated Material[]      @relation("MaterialUpdatedBy")
-  movementsCreated StockMovement[] @relation("MovementCreatedBy")
+  sitesCreated          Site[]            @relation("SiteCreatedBy")
+  sitesUpdated          Site[]            @relation("SiteUpdatedBy")
+  materialsCreated      Material[]        @relation("MaterialCreatedBy")
+  materialsUpdated      Material[]        @relation("MaterialUpdatedBy")
+  movementsCreated      StockMovement[]   @relation("MovementCreatedBy")
+  vendorsCreated        Vendor[]          @relation("VendorCreatedBy")
+  vendorsUpdated        Vendor[]          @relation("VendorUpdatedBy")
+  requisitionsRequested Requisition[]     @relation("RequisitionRequestedBy")
+  requisitionsApproved  Requisition[]     @relation("RequisitionApprovedBy")
+  requisitionsCreated   Requisition[]     @relation("RequisitionCreatedBy")
+  requisitionsUpdated   Requisition[]     @relation("RequisitionUpdatedBy")
+  requisitionLinesCreated RequisitionLine[] @relation("RequisitionLineCreatedBy")
+  requisitionLinesUpdated RequisitionLine[] @relation("RequisitionLineUpdatedBy")
 
   @@unique([tenantId, email])
   @@map("user")
@@ -100,7 +122,8 @@ model Site {
   updatedById String?
   updatedBy   User?    @relation("SiteUpdatedBy", fields: [updatedById], references: [id])
 
-  movements StockMovement[]
+  movements    StockMovement[]
+  requisitions Requisition[]
 
   @@unique([tenantId, name])
   @@map("site")
@@ -115,7 +138,7 @@ model Material {
   category String?
 
   // milestone-1 simplification (ADR-0002) — becomes baseUnitId (FK to a
-  // real Unit table) in the milestone-2 migration, once conversion matters.
+  // real Unit table) in a later migration, once conversion matters.
   unit String
 
   reorderLevel Decimal? @db.Decimal(14, 3)
@@ -129,7 +152,8 @@ model Material {
   updatedById String?
   updatedBy   User?    @relation("MaterialUpdatedBy", fields: [updatedById], references: [id])
 
-  movements StockMovement[]
+  movements        StockMovement[]
+  requisitionLines RequisitionLine[]
 
   @@unique([tenantId, code])
   @@map("material")
@@ -138,8 +162,8 @@ model Material {
 // -----------------------------------------------------------------------
 // StockMovement — append-only ledger. No updatedAt / updatedById, no soft
 // delete: a mistake is corrected by posting a new row (reversalOfId), never
-// by editing this one. RECEIPT only until milestone 3 adds Requisition and
-// ISSUE starts getting used.
+// by editing this one. requisitionLineId is set only on ISSUE rows created
+// by fulfilling a requisition — RECEIPT (Store In) rows leave it null.
 // -----------------------------------------------------------------------
 model StockMovement {
   id       String @id @default(uuid())
@@ -152,6 +176,9 @@ model StockMovement {
   material     Material     @relation(fields: [materialId], references: [id])
   movementType MovementType
   quantity     Decimal      @db.Decimal(14, 3)
+
+  requisitionLineId String?
+  requisitionLine   RequisitionLine? @relation(fields: [requisitionLineId], references: [id])
 
   reversalOfId String?
   reversalOf   StockMovement?  @relation("MovementReversal", fields: [reversalOfId], references: [id])
@@ -167,4 +194,93 @@ model StockMovement {
   // this index is what makes that read fast.
   @@index([tenantId, siteId, materialId])
   @@map("stock_movement")
+}
+
+// -----------------------------------------------------------------------
+// Vendor — v1 boundary is deliberately thin: name + contact only. No
+// ledger, no PO history, no balance. That's the whole point of "not v2".
+// -----------------------------------------------------------------------
+model Vendor {
+  id           String  @id @default(uuid())
+  tenantId     String
+  tenant       Tenant  @relation(fields: [tenantId], references: [id])
+  name         String
+  contactName  String?
+  contactPhone String?
+  contactEmail String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdById String?
+  createdBy   User?    @relation("VendorCreatedBy", fields: [createdById], references: [id])
+  updatedById String?
+  updatedBy   User?    @relation("VendorUpdatedBy", fields: [updatedById], references: [id])
+
+  @@unique([tenantId, name])
+  @@map("vendor")
+}
+
+// -----------------------------------------------------------------------
+// Requisition — the header + state machine. Status transitions are
+// enforced in RequisitionsService, not here; Prisma has no CHECK
+// constraints (ADR-0001), so an invalid transition is a service-layer bug,
+// not a database one, until that's revisited.
+// -----------------------------------------------------------------------
+model Requisition {
+  id       String            @id @default(uuid())
+  tenantId String
+  tenant   Tenant            @relation(fields: [tenantId], references: [id])
+  siteId   String
+  site     Site              @relation(fields: [siteId], references: [id])
+  status   RequisitionStatus @default(DRAFT)
+
+  requestedById String
+  requestedBy   User    @relation("RequisitionRequestedBy", fields: [requestedById], references: [id])
+  approvedById  String?
+  approvedBy    User?   @relation("RequisitionApprovedBy", fields: [approvedById], references: [id])
+  approvedAt    DateTime?
+  rejectedReason String?
+
+  remarks String?
+
+  lines RequisitionLine[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdById String?
+  createdBy   User?    @relation("RequisitionCreatedBy", fields: [createdById], references: [id])
+  updatedById String?
+  updatedBy   User?    @relation("RequisitionUpdatedBy", fields: [updatedById], references: [id])
+
+  @@index([tenantId, siteId, status])
+  @@map("requisition")
+}
+
+// -----------------------------------------------------------------------
+// RequisitionLine — requestedQty/approvedQty are plain columns (they're
+// decisions someone made, not history). "How much has been issued so far"
+// is deliberately NOT a column here — it's SUM(StockMovement.quantity)
+// for this line's ISSUE rows, same derived-not-stored rule as current
+// stock. A stored running total could drift from the ledger; a derived
+// one can't.
+// -----------------------------------------------------------------------
+model RequisitionLine {
+  id            String      @id @default(uuid())
+  requisitionId String
+  requisition   Requisition @relation(fields: [requisitionId], references: [id])
+  materialId    String
+  material      Material    @relation(fields: [materialId], references: [id])
+  requestedQty  Decimal     @db.Decimal(14, 3)
+  approvedQty   Decimal?    @db.Decimal(14, 3)
+
+  movements StockMovement[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdById String?
+  createdBy   User?    @relation("RequisitionLineCreatedBy", fields: [createdById], references: [id])
+  updatedById String?
+  updatedBy   User?    @relation("RequisitionLineUpdatedBy", fields: [updatedById], references: [id])
+
+  @@map("requisition_line")
 }

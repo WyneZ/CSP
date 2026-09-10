@@ -14,4 +14,20 @@ if (process.env.NODE_ENV !== "production") {
   global.__prisma = prisma;
 }
 
-export * from "@prisma/client";
+// Named re-exports, not `export *`: a wildcard re-export of @prisma/client's
+// generated entrypoint has been seen to drop this file's own named export
+// (`prisma` above) under Node's CJS/ESM interop — a static, named list here
+// isn't subject to that. Enums and `Prisma`/`PrismaClient` are runtime
+// values (used as e.g. Role.ADMIN, Prisma.Decimal), so they're real
+// exports, not `export type` — model shapes are types only.
+export { PrismaClient, Prisma, Role, SiteStatus, MovementType, RequisitionStatus } from "@prisma/client";
+export type {
+  Tenant,
+  User,
+  Site,
+  Material,
+  StockMovement,
+  Vendor,
+  Requisition,
+  RequisitionLine,
+} from "@prisma/client";
