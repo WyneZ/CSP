@@ -28,3 +28,10 @@ coverage/
 
 packages/db/.env
 packages/db/generated/
+
+# build outputs
+.next/
+dist/
+build/
+.turbo/
+*.tsbuildinfo
