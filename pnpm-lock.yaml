@@ -17,6 +17,9 @@ importers:
       '@csp-erp/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@csp-erp/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
       '@nestjs/common':
         specifier: ^12.0.1
         version: 12.0.1(reflect-metadata@0.2.2)(rxjs@7.8.2)
