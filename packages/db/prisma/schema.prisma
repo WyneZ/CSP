@@ -186,6 +186,12 @@ model StockMovement {
 
   remarks String?
 
+  // Phase A (inventory correctness, 2026-09-11): client-generated dedup key
+  // for retry-safe writes (a submit that times out and is retried must not
+  // double-post). Scoped per-tenant, nullable because older rows and any
+  // future server-originated movements won't have one.
+  idempotencyKey String?
+
   createdAt   DateTime @default(now())
   createdById String?
   createdBy   User?    @relation("MovementCreatedBy", fields: [createdById], references: [id])
@@ -193,6 +199,7 @@ model StockMovement {
   // current stock = SUM(quantity) WHERE tenantId/siteId/materialId match —
   // this index is what makes that read fast.
   @@index([tenantId, siteId, materialId])
+  @@unique([tenantId, idempotencyKey])
   @@map("stock_movement")
 }
 
