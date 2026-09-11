@@ -38,7 +38,14 @@ async function bootstrap() {
       saveUninitialized: false,
       cookie: {
         httpOnly: true,
+        // Vercel (web) and Render (api) are different domains, so the
+        // session cookie is cross-site. Cross-site cookies require
+        // SameSite=None, and browsers require Secure whenever SameSite=None
+        // is set. Both prod hosts are HTTPS, so this is safe there.
+        // Locally, api and web share the "site" (localhost), so we keep the
+        // default Lax/insecure cookie — Secure would break it over http.
         secure: process.env.NODE_ENV === 'production',
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
         maxAge: 1000 * 60 * 60 * 8,
       },
     }),
