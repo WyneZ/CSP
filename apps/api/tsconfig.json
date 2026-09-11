@@ -16,9 +16,24 @@
     "types": ["node", "jest"],
     "sourceMap": true,
     "outDir": "./dist",
+    // Phase A: made explicit because ts-jest's compile path (unlike a
+    // plain `tsc --noEmit`) requires this once source files live in more
+    // than one subdirectory under src/ — added when the new
+    // stock.service.spec.ts / requisitions.service.spec.ts / test-utils/
+    // files introduced that. Matches what TS was already inferring, so
+    // this doesn't change build output.
+    "rootDir": "./src",
     "incremental": true,
     "skipLibCheck": true,
     "strict": true,
     "strictPropertyInitialization": false
-  }
+  },
+  // jest.config.ts and test/ (the e2e-only dir) sit outside src/, which is
+  // now rootDir above — excluded here so `tsc -p tsconfig.json` (whole-
+  // project typecheck) doesn't try to fit them under it. tsconfig.build.json
+  // (nest build's real config) already excluded "test" on its own; this
+  // just brings the base config's plain-tsc behavior in line with that.
+  // Doesn't affect ts-jest, which transpiles files ts-jest/Jest hand it
+  // directly rather than walking this "include" list.
+  "exclude": ["node_modules", "dist", "jest.config.ts", "test"]
 }
