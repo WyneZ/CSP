@@ -6,6 +6,14 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  // Render (and most PaaS reverse proxies) terminate TLS at the edge and
+  // forward to this app over plain HTTP, setting X-Forwarded-Proto: https.
+  // Without trust proxy, Express sees every request as insecure, so
+  // express-session silently refuses to send Set-Cookie when cookie.secure
+  // is true (thinking it would be sending a secure cookie over plain HTTP).
+  // This must be set before the session middleware below.
+  app.getHttpAdapter().getInstance().set('trust proxy', 1);
+
   // app.enableCors({
   //   origin: [process.env.WEB_ORIGIN ?? 'http://localhost:3000',
   //   credentials: true,
