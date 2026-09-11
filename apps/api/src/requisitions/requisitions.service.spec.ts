@@ -233,3 +233,328 @@ describe('RequisitionsService.issue — Phase A', () => {
     }
   });
 });
+
+describe('RequisitionsService.create — idempotency (Phase B prerequisite)', () => {
+  const stockService = new StockService();
+  const service = new RequisitionsService(stockService);
+  let fx: Awaited<ReturnType<typeof createTenantFixtures>>;
+
+  beforeEach(async () => {
+    fx = await createTenantFixtures();
+  });
+
+  afterEach(async () => {
+    if (fx) await cleanupTenant(fx.tenant.id);
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  it('a duplicate create with the same idempotency key and same payload replays instead of double-posting', async () => {
+    const idempotencyKey = randomUUID();
+    const input = {
+      siteId: fx.site.id,
+      remarks: 'Cement for foundation slab',
+      idempotencyKey,
+      lines: [{ materialId: fx.material.id, requestedQty: 10 }],
+    };
+    const first = await service.create(fx.tenant.id, fx.user.id, input);
+    const second = await service.create(fx.tenant.id, fx.user.id, input);
+    expect(second.id).toBe(first.id);
+    const count = await prisma.requisition.count({
+      where: { tenantId: fx.tenant.id, idempotencyKey },
+    });
+    expect(count).toBe(1); // not 2
+  });
+
+  it('rejects the same key reused with different remarks as a conflict, not a silent replay', async () => {
+    const idempotencyKey = randomUUID();
+    await service.create(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      remarks: 'Original purpose',
+      idempotencyKey,
+      lines: [{ materialId: fx.material.id, requestedQty: 10 }],
+    });
+    await expect(
+      service.create(fx.tenant.id, fx.user.id, {
+        siteId: fx.site.id,
+        remarks: 'Different purpose',
+        idempotencyKey,
+        lines: [{ materialId: fx.material.id, requestedQty: 10 }],
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('rejects the same key reused with a different material as a conflict', async () => {
+    const otherMaterial = await prisma.material.create({
+      data: {
+        tenantId: fx.tenant.id,
+        code: `MAT-${randomUUID().slice(0, 8)}`,
+        name: 'Other Material',
+        unit: 'kg',
+      },
+    });
+    const idempotencyKey = randomUUID();
+    await service.create(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      idempotencyKey,
+      lines: [{ materialId: fx.material.id, requestedQty: 10 }],
+    });
+    await expect(
+      service.create(fx.tenant.id, fx.user.id, {
+        siteId: fx.site.id,
+        idempotencyKey,
+        lines: [{ materialId: otherMaterial.id, requestedQty: 10 }],
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('rejects the same key reused with a different quantity as a conflict', async () => {
+    const idempotencyKey = randomUUID();
+    await service.create(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      idempotencyKey,
+      lines: [{ materialId: fx.material.id, requestedQty: 10 }],
+    });
+    await expect(
+      service.create(fx.tenant.id, fx.user.id, {
+        siteId: fx.site.id,
+        idempotencyKey,
+        lines: [{ materialId: fx.material.id, requestedQty: 20 }],
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('treats the same lines supplied in a different order as the same logical request (replay, not conflict)', async () => {
+    const otherMaterial = await prisma.material.create({
+      data: {
+        tenantId: fx.tenant.id,
+        code: `MAT-${randomUUID().slice(0, 8)}`,
+        name: 'Other Material',
+        unit: 'kg',
+      },
+    });
+    const idempotencyKey = randomUUID();
+    const first = await service.create(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      idempotencyKey,
+      lines: [
+        { materialId: fx.material.id, requestedQty: 10 },
+        { materialId: otherMaterial.id, requestedQty: 5 },
+      ],
+    });
+    const second = await service.create(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      idempotencyKey,
+      lines: [
+        { materialId: otherMaterial.id, requestedQty: 5 },
+        { materialId: fx.material.id, requestedQty: 10 },
+      ],
+    });
+    expect(second.id).toBe(first.id); // normalizeLines() sorts by materialId before comparing
+  });
+
+  it('two different keys from the same tenant create two independent requisitions (no collision)', async () => {
+    const first = await service.create(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      idempotencyKey: randomUUID(),
+      lines: [{ materialId: fx.material.id, requestedQty: 10 }],
+    });
+    const second = await service.create(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      idempotencyKey: randomUUID(),
+      lines: [{ materialId: fx.material.id, requestedQty: 10 }],
+    });
+    expect(second.id).not.toBe(first.id);
+  });
+
+  it('the same idempotency key is scoped per tenant, not global — reuse across tenants is allowed independently', async () => {
+    const idempotencyKey = randomUUID();
+    const otherFx = await createTenantFixtures();
+    try {
+      const first = await service.create(fx.tenant.id, fx.user.id, {
+        siteId: fx.site.id,
+        idempotencyKey,
+        lines: [{ materialId: fx.material.id, requestedQty: 10 }],
+      });
+      const second = await service.create(otherFx.tenant.id, otherFx.user.id, {
+        siteId: otherFx.site.id,
+        idempotencyKey,
+        lines: [{ materialId: otherFx.material.id, requestedQty: 10 }],
+      });
+      expect(second.id).not.toBe(first.id);
+      expect(second.tenantId).toBe(otherFx.tenant.id);
+    } finally {
+      await cleanupTenant(otherFx.tenant.id);
+    }
+  });
+
+  it('omitting the idempotency key preserves existing behavior — each call creates a new requisition', async () => {
+    const first = await service.create(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      lines: [{ materialId: fx.material.id, requestedQty: 10 }],
+    });
+    const second = await service.create(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      lines: [{ materialId: fx.material.id, requestedQty: 10 }],
+    });
+    expect(second.id).not.toBe(first.id);
+    expect(first.idempotencyKey).toBeNull();
+    expect(second.idempotencyKey).toBeNull();
+  });
+
+  it('two concurrent creates with the same key and same payload produce exactly one requisition row', async () => {
+    const idempotencyKey = randomUUID();
+    const input = {
+      siteId: fx.site.id,
+      idempotencyKey,
+      lines: [{ materialId: fx.material.id, requestedQty: 10 }],
+    };
+    // Both calls are the SAME logical request, so both are expected to
+    // resolve — the loser of the unique-constraint race re-reads and
+    // replays the winner's row rather than erroring out (see
+    // assertCreateReplayOrConflict / isIdempotencyKeyConflict in
+    // requisitions.service.ts). This is different from the concurrent
+    // ISSUE test above, where two DIFFERENT requests race for the same
+    // finite resource and one is correctly expected to be rejected.
+    const results = await Promise.allSettled([
+      service.create(fx.tenant.id, fx.user.id, input),
+      service.create(fx.tenant.id, fx.user.id, input),
+    ]);
+    const fulfilled = results.filter(
+      (r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof service.create>>> =>
+        r.status === 'fulfilled',
+    );
+    expect(fulfilled).toHaveLength(2);
+    expect(fulfilled[0].value.id).toBe(fulfilled[1].value.id);
+
+    const count = await prisma.requisition.count({
+      where: { tenantId: fx.tenant.id, idempotencyKey },
+    });
+    expect(count).toBe(1); // exactly one row despite two concurrent inserts
+  });
+});
+
+describe('RequisitionsService.issue + StockService.undoMovement — status recomputation (Phase B prerequisite)', () => {
+  const stockService = new StockService();
+  const service = new RequisitionsService(stockService);
+  let fx: Awaited<ReturnType<typeof createTenantFixtures>>;
+
+  beforeEach(async () => {
+    fx = await createTenantFixtures();
+    await stockService.recordReceipt(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      materialId: fx.material.id,
+      quantity: 100,
+    });
+  });
+
+  afterEach(async () => {
+    if (fx) await cleanupTenant(fx.tenant.id);
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  // Same bypass-submit()/approve() shortcut as the issue() describe block
+  // above, generalized to accept N lines with independent quantities.
+  async function createApprovedRequisitionWithLines(
+    lines: { requestedQty: number; approvedQty: number }[],
+  ) {
+    return prisma.requisition.create({
+      data: {
+        tenantId: fx.tenant.id,
+        siteId: fx.site.id,
+        status: RequisitionStatus.APPROVED,
+        requestedById: fx.user.id,
+        approvedById: fx.user.id,
+        approvedAt: new Date(),
+        lines: {
+          create: lines.map((l) => ({
+            materialId: fx.material.id,
+            requestedQty: l.requestedQty,
+            approvedQty: l.approvedQty,
+          })),
+        },
+      },
+      include: { lines: true },
+    });
+  }
+
+  it('undoing the only issue on a fully-issued requisition returns it to APPROVED, not stuck at ISSUED', async () => {
+    const req = await createApprovedRequisitionWithLines([{ requestedQty: 10, approvedQty: 10 }]);
+    const issued = await service.issue(fx.tenant.id, fx.user.id, req.id, {
+      lines: [{ lineId: req.lines[0].id, quantity: 10 }],
+    });
+    expect(issued.status).toBe(RequisitionStatus.ISSUED);
+
+    const movement = await prisma.stockMovement.findFirstOrThrow({
+      where: { requisitionLineId: req.lines[0].id },
+    });
+    await stockService.undoMovement(fx.tenant.id, fx.user.id, movement.id);
+
+    const after = await prisma.requisition.findUniqueOrThrow({ where: { id: req.id } });
+    expect(after.status).toBe(RequisitionStatus.APPROVED); // ledger truth: nothing issued anymore
+  });
+
+  it('undoing one line of a multi-line ISSUED requisition drops it to PARTIALLY_ISSUED while the untouched line stays fully issued', async () => {
+    const req = await createApprovedRequisitionWithLines([
+      { requestedQty: 10, approvedQty: 10 },
+      { requestedQty: 5, approvedQty: 5 },
+    ]);
+    const [lineA, lineB] = req.lines;
+    const issued = await service.issue(fx.tenant.id, fx.user.id, req.id, {
+      lines: [
+        { lineId: lineA.id, quantity: 10 },
+        { lineId: lineB.id, quantity: 5 },
+      ],
+    });
+    expect(issued.status).toBe(RequisitionStatus.ISSUED);
+
+    const movementA = await prisma.stockMovement.findFirstOrThrow({
+      where: { requisitionLineId: lineA.id },
+    });
+    await stockService.undoMovement(fx.tenant.id, fx.user.id, movementA.id);
+
+    const after = await prisma.requisition.findUniqueOrThrow({ where: { id: req.id } });
+    expect(after.status).toBe(RequisitionStatus.PARTIALLY_ISSUED); // lineB is still fully issued, lineA is not
+
+    const lineBIssued = await prisma.stockMovement.aggregate({
+      where: { requisitionLineId: lineB.id },
+      _sum: { quantity: true },
+    });
+    expect(lineBIssued._sum.quantity?.toNumber()).toBe(5); // untouched by lineA's undo
+  });
+
+  it('undoing the second of two sequential issues leaves the truthful remaining quantity, not a hardcoded rollback', async () => {
+    const req = await createApprovedRequisitionWithLines([{ requestedQty: 10, approvedQty: 10 }]);
+    const lineId = req.lines[0].id;
+
+    await service.issue(fx.tenant.id, fx.user.id, req.id, {
+      lines: [{ lineId, quantity: 4 }],
+    });
+    const fullyIssued = await service.issue(fx.tenant.id, fx.user.id, req.id, {
+      lines: [{ lineId, quantity: 6 }],
+    });
+    expect(fullyIssued.status).toBe(RequisitionStatus.ISSUED); // 4 + 6 = 10/10
+
+    const movements = await prisma.stockMovement.findMany({
+      where: { requisitionLineId: lineId },
+      orderBy: { createdAt: 'asc' },
+    });
+    expect(movements).toHaveLength(2);
+    await stockService.undoMovement(fx.tenant.id, fx.user.id, movements[1].id); // undo the 6-unit issue only
+
+    const after = await prisma.requisition.findUniqueOrThrow({ where: { id: req.id } });
+    expect(after.status).toBe(RequisitionStatus.PARTIALLY_ISSUED); // 4 of 10 still stands -- not APPROVED, not ISSUED
+
+    const agg = await prisma.stockMovement.aggregate({
+      where: { requisitionLineId: lineId },
+      _sum: { quantity: true },
+    });
+    expect(agg._sum.quantity?.toNumber()).toBe(4); // the first issue survives untouched; only the second was undone
+  });
+});
+

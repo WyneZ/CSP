@@ -2,9 +2,9 @@
 // DATABASE_URL (see src/test-setup-env.ts for how it's loaded — prefer
 // .env.test over your dev .env). Run with:
 //   pnpm --filter api test stock.service.spec.ts
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { prisma, MovementType } from '@csp-erp/db';
+import { prisma, MovementType, Role } from '@csp-erp/db';
 import { StockService } from './stock.service';
 import { createTenantFixtures, cleanupTenant } from '../test-utils/fixtures';
 
@@ -244,5 +244,227 @@ describe('StockService — Phase A', () => {
     expect(bResult).toBeTruthy();
     const available = await service.getAvailableQuantity(fx.tenant.id, fx.site.id, fx.material.id);
     expect(available.toNumber()).toBe(-2); // stock is now negative — the actual defect
+  });
+});
+
+
+describe('StockService.undoMovement — same-day undo (Phase B prerequisite)', () => {
+  const service = new StockService();
+  let fx: Awaited<ReturnType<typeof createTenantFixtures>>;
+
+  beforeEach(async () => {
+    fx = await createTenantFixtures();
+  });
+
+  afterEach(async () => {
+    if (fx) await cleanupTenant(fx.tenant.id);
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  it('the original creator can undo a same-day receipt', async () => {
+    const receipt = await service.recordReceipt(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      materialId: fx.material.id,
+      quantity: 50,
+    });
+    const undo = await service.undoMovement(fx.tenant.id, fx.user.id, receipt.id);
+    expect(undo.reversalOfId).toBe(receipt.id);
+    expect(undo.quantity.toNumber()).toBe(-50);
+
+    const available = await service.getAvailableQuantity(fx.tenant.id, fx.site.id, fx.material.id);
+    expect(available.toNumber()).toBe(0);
+  });
+
+  it('the original creator can undo a same-day direct issue', async () => {
+    await service.recordReceipt(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      materialId: fx.material.id,
+      quantity: 50,
+    });
+    const issue = await service.recordIssue(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      materialId: fx.material.id,
+      quantity: 20,
+    });
+    const undo = await service.undoMovement(fx.tenant.id, fx.user.id, issue.id);
+    expect(undo.reversalOfId).toBe(issue.id);
+    expect(undo.quantity.toNumber()).toBe(-20);
+
+    const available = await service.getAvailableQuantity(fx.tenant.id, fx.site.id, fx.material.id);
+    expect(available.toNumber()).toBe(50); // back to pre-issue level
+  });
+
+  it("a different user cannot undo someone else's movement", async () => {
+    const receipt = await service.recordReceipt(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      materialId: fx.material.id,
+      quantity: 50,
+    });
+    const otherUser = await prisma.user.create({
+      data: {
+        tenantId: fx.tenant.id,
+        name: 'Other User',
+        email: `other-${randomUUID()}@test.local`,
+        passwordHash: 'unused-in-tests',
+        role: Role.STOREKEEPER,
+      },
+    });
+    await expect(
+      service.undoMovement(fx.tenant.id, otherUser.id, receipt.id),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('a movement cannot be undone on a later day (site-local, Asia/Yangon)', async () => {
+    const twoDaysAgo = new Date();
+    twoDaysAgo.setUTCDate(twoDaysAgo.getUTCDate() - 2); // safely across any timezone boundary
+    const receipt = await prisma.stockMovement.create({
+      data: {
+        tenantId: fx.tenant.id,
+        siteId: fx.site.id,
+        materialId: fx.material.id,
+        movementType: MovementType.RECEIPT,
+        quantity: 50,
+        createdById: fx.user.id,
+        createdAt: twoDaysAgo,
+      },
+    });
+    await expect(
+      service.undoMovement(fx.tenant.id, fx.user.id, receipt.id),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('a movement cannot be undone twice', async () => {
+    const receipt = await service.recordReceipt(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      materialId: fx.material.id,
+      quantity: 50,
+    });
+    await service.undoMovement(fx.tenant.id, fx.user.id, receipt.id);
+    await expect(
+      service.undoMovement(fx.tenant.id, fx.user.id, receipt.id),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('a reversal (compensating movement) cannot itself be undone', async () => {
+    const receipt = await service.recordReceipt(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      materialId: fx.material.id,
+      quantity: 50,
+    });
+    const undo = await service.undoMovement(fx.tenant.id, fx.user.id, receipt.id);
+    await expect(
+      service.undoMovement(fx.tenant.id, fx.user.id, undo.id),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('the original movement row is never edited or deleted by an undo', async () => {
+    const receipt = await service.recordReceipt(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      materialId: fx.material.id,
+      quantity: 50,
+    });
+    await service.undoMovement(fx.tenant.id, fx.user.id, receipt.id);
+    const stillThere = await prisma.stockMovement.findUniqueOrThrow({ where: { id: receipt.id } });
+    expect(stillThere.quantity.toNumber()).toBe(50);
+    expect(stillThere.reversalOfId).toBeNull();
+    expect(stillThere.movementType).toBe(MovementType.RECEIPT);
+  });
+
+  it('the reversal relationship (reversalOfId / reversedBy) is stored correctly', async () => {
+    const receipt = await service.recordReceipt(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      materialId: fx.material.id,
+      quantity: 50,
+    });
+    const undo = await service.undoMovement(fx.tenant.id, fx.user.id, receipt.id);
+    const withReversals = await prisma.stockMovement.findUniqueOrThrow({
+      where: { id: receipt.id },
+      include: { reversedBy: true },
+    });
+    expect(withReversals.reversedBy).toHaveLength(1);
+    expect(withReversals.reversedBy[0].id).toBe(undo.id);
+    expect(undo.reversalOfId).toBe(receipt.id);
+  });
+
+  it('blocks undoing a receipt when doing so would leave stock negative', async () => {
+    const receipt = await service.recordReceipt(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      materialId: fx.material.id,
+      quantity: 100,
+    });
+    await service.recordIssue(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      materialId: fx.material.id,
+      quantity: 80,
+    });
+    await expect(
+      service.undoMovement(fx.tenant.id, fx.user.id, receipt.id),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    // Atomic rejection -- nothing changed.
+    const available = await service.getAvailableQuantity(fx.tenant.id, fx.site.id, fx.material.id);
+    expect(available.toNumber()).toBe(20); // 100 - 80, unaffected by the rejected undo
+    const count = await prisma.stockMovement.count({
+      where: { tenantId: fx.tenant.id, materialId: fx.material.id },
+    });
+    expect(count).toBe(2); // just the original receipt + issue, no compensating row
+  });
+
+  it('tenant isolation: a movement cannot be undone under a different tenant', async () => {
+    const receipt = await service.recordReceipt(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      materialId: fx.material.id,
+      quantity: 50,
+    });
+    const otherFx = await createTenantFixtures();
+    try {
+      await expect(
+        service.undoMovement(otherFx.tenant.id, otherFx.user.id, receipt.id),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    } finally {
+      await cleanupTenant(otherFx.tenant.id);
+    }
+  });
+
+  it("site isolation: undoing a movement at one site does not affect another site's stock", async () => {
+    const otherSite = await prisma.site.create({
+      data: { tenantId: fx.tenant.id, name: `Other Site ${randomUUID()}` },
+    });
+    await service.recordReceipt(fx.tenant.id, fx.user.id, {
+      siteId: otherSite.id,
+      materialId: fx.material.id,
+      quantity: 30,
+    });
+    const receipt = await service.recordReceipt(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      materialId: fx.material.id,
+      quantity: 50,
+    });
+    await service.undoMovement(fx.tenant.id, fx.user.id, receipt.id);
+
+    const thisSite = await service.getAvailableQuantity(fx.tenant.id, fx.site.id, fx.material.id);
+    const otherSiteAvail = await service.getAvailableQuantity(fx.tenant.id, otherSite.id, fx.material.id);
+    expect(thisSite.toNumber()).toBe(0);
+    expect(otherSiteAvail.toNumber()).toBe(30); // untouched
+  });
+
+  it('a retried/double-tapped undo is safe -- only one compensating movement is ever created', async () => {
+    const receipt = await service.recordReceipt(fx.tenant.id, fx.user.id, {
+      siteId: fx.site.id,
+      materialId: fx.material.id,
+      quantity: 50,
+    });
+    const results = await Promise.allSettled([
+      service.undoMovement(fx.tenant.id, fx.user.id, receipt.id),
+      service.undoMovement(fx.tenant.id, fx.user.id, receipt.id),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
+
+    const reversals = await prisma.stockMovement.count({ where: { reversalOfId: receipt.id } });
+    expect(reversals).toBe(1);
   });
 });
