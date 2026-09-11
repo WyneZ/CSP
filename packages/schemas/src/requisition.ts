@@ -3,6 +3,11 @@ import { z } from "zod";
 export const createRequisitionSchema = z.object({
   siteId: z.string().uuid(),
   remarks: z.string().optional(),
+  // Phase B: client-generated per-attempt key, same pattern as
+  // createReceiptSchema/createIssueSchema/issueRequisitionSchema below.
+  // Same key resubmitted == same logical create; a resubmit with a fresh
+  // key is a new requisition.
+  idempotencyKey: z.string().uuid().optional(),
   lines: z
     .array(
       z.object({
