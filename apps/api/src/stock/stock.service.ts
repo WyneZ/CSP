@@ -1,9 +1,41 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { prisma, Prisma, MovementType } from '@csp-erp/db';
 import type { StockMovement } from '@csp-erp/db';
 import type { CreateReceiptInput, CreateIssueInput } from '@csp-erp/schemas';
+import { computeIssuedStatus } from '../requisitions/requisition-status.util';
 
 type Tx = Prisma.TransactionClient;
+
+// Phase B backend prerequisite (same-day undo, 2026-09-11): V1 assumption
+// -- exactly one site, one timezone (Asia/Yangon, per the approved
+// correction). No timezone column exists on Tenant/Site/User yet; when
+// multi-site support needs multiple timezones this must become a
+// per-site lookup (a new Site.timezone column) instead of a hardcoded
+// constant. Tracked as a known limitation, not solved here -- adding
+// timezone infrastructure was explicitly out of scope for this task.
+const SITE_TIMEZONE = 'Asia/Yangon';
+
+function siteLocalCalendarDate(date: Date): string {
+  // Node's bundled ICU/Intl already has full IANA tz data -- this needs no
+  // extra dependency (deliberately avoided adding a timezone library for
+  // one constant). 'en-CA' formats as YYYY-MM-DD, which is all that's
+  // compared -- the actual locale is irrelevant, only the format is used.
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: SITE_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+
+function isSameSiteLocalDay(a: Date, b: Date): boolean {
+  return siteLocalCalendarDate(a) === siteLocalCalendarDate(b);
+}
 
 // Phase A validation fix: a client-generated key identifies one specific
 // logical request, not "any request from this client ever." If the same
@@ -211,6 +243,128 @@ export class StockService {
 
     if (client) return run(client);
     return prisma.$transaction((tx) => run(tx));
+  }
+
+  // Phase B backend prerequisite (same-day undo, 2026-09-11): one dispatch
+  // point for both GRN (RECEIPT) and Issue undo -- every safety check
+  // below (creator / same-day / not-already-a-reversal / not-already-
+  // reversed) is identical regardless of movement type. Only the final
+  // type-specific safety check (RECEIPT: would stock go negative?) and the
+  // post-write side effect (ISSUE tied to a requisition line: recompute
+  // that requisition's status) differ, and both are handled inline below
+  // rather than via two near-duplicate methods.
+  //
+  // The compensating movement is the SAME movementType as the original,
+  // with its quantity NEGATED, and reversalOfId pointing at the original
+  // -- the original StockMovement row is never edited or deleted (schema
+  // foundations rule; the append-only ledger's whole point). This
+  // representation was chosen deliberately after checking every existing
+  // ledger-derived query it has to stay compatible with:
+  //   - getAvailableQuantity(): SUMs quantity per movementType with no
+  //     sign massaging, so a negative-quantity same-type row nets out
+  //     correctly with zero changes to that function.
+  //   - RequisitionsService.issue()'s per-line "issued so far" aggregate:
+  //     SUMs quantity for a requisitionLineId with NO movementType filter
+  //     at all -- a same-type reversal nets correctly through it; an
+  //     opposite-type reversal (e.g. a RECEIPT "undoing" an ISSUE) would
+  //     NOT, because it would still be summed in but wouldn't represent
+  //     the right sign relative to approvedQty. Same-type-negated is the
+  //     only representation that is mathematically compatible with both
+  //     call sites unchanged.
+  async undoMovement(tenantId: string, userId: string, movementId: string) {
+    return prisma.$transaction(async (tx) => {
+      // Row-level lock -- same pattern as the RequisitionLine lock in
+      // RequisitionsService.issue(). Without it, two near-simultaneous
+      // undo taps on the same movement could both pass the "not already
+      // reversed" check below before either commits its compensating row,
+      // producing two reversals of one movement -- exactly the class of
+      // race Phase A already closed for concurrent requisition issues.
+      const locked = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM stock_movement WHERE id = ${movementId} AND "tenantId" = ${tenantId} FOR UPDATE
+      `;
+      if (locked.length === 0) {
+        throw new NotFoundException('Movement not found');
+      }
+
+      const movement = await tx.stockMovement.findUniqueOrThrow({ where: { id: movementId } });
+
+      if (movement.createdById !== userId) {
+        throw new ForbiddenException('Only the person who recorded this can undo it');
+      }
+      if (movement.reversalOfId !== null) {
+        throw new ConflictException('A correcting entry cannot itself be undone');
+      }
+      const alreadyReversed = await tx.stockMovement.findFirst({
+        where: { reversalOfId: movement.id },
+      });
+      if (alreadyReversed) {
+        throw new ConflictException('This has already been undone');
+      }
+      if (!isSameSiteLocalDay(movement.createdAt, new Date())) {
+        throw new ConflictException(
+          'This can only be undone on the same day it was recorded (site-local time)',
+        );
+      }
+
+      if (movement.movementType === MovementType.RECEIPT) {
+        const available = await this.getAvailableQuantity(
+          tenantId,
+          movement.siteId,
+          movement.materialId,
+          tx,
+        );
+        const afterUndo = available.minus(movement.quantity);
+        if (afterUndo.lessThan(0)) {
+          throw new ConflictException(
+            `Undoing this receipt would leave stock at ${afterUndo.toString()} -- later issues have already used this material`,
+          );
+        }
+      }
+
+      const compensating = await tx.stockMovement.create({
+        data: {
+          tenantId,
+          siteId: movement.siteId,
+          materialId: movement.materialId,
+          movementType: movement.movementType,
+          quantity: new Prisma.Decimal(movement.quantity).times(-1),
+          requisitionLineId: movement.requisitionLineId,
+          reversalOfId: movement.id,
+          remarks: `Undo of movement ${movement.id}`,
+          createdById: userId,
+        },
+      });
+
+      // Only an ISSUE tied to a requisition line has a requisition status
+      // to recompute -- a direct Store Out (no requisitionLineId) or a
+      // RECEIPT never does.
+      if (movement.requisitionLineId) {
+        const line = await tx.requisitionLine.findUniqueOrThrow({
+          where: { id: movement.requisitionLineId },
+        });
+        const siblingLines = await tx.requisitionLine.findMany({
+          where: { requisitionId: line.requisitionId },
+        });
+        const linesForStatus = await Promise.all(
+          siblingLines.map(async (l) => {
+            const agg = await tx.stockMovement.aggregate({
+              where: { requisitionLineId: l.id },
+              _sum: { quantity: true },
+            });
+            return {
+              approvedQty: l.approvedQty,
+              issuedQty: agg._sum.quantity ?? new Prisma.Decimal(0),
+            };
+          }),
+        );
+        await tx.requisition.update({
+          where: { id: line.requisitionId },
+          data: { status: computeIssuedStatus(linesForStatus), updatedById: userId },
+        });
+      }
+
+      return compensating;
+    });
   }
 
   async getCurrentStock(tenantId: string, siteId?: string, materialId?: string) {
