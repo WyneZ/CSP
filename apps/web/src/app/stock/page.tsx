@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
 import { useRequireAuth } from "@/lib/session-context";
@@ -97,6 +97,16 @@ function StockPageInner() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // Phase A: one idempotency key per *attempt*. Generated lazily on first
+  // submit, reused across retries of that same attempt (e.g. a network
+  // error and a manual re-click of the button), and reset whenever the
+  // form fields actually change — a new quantity/material/site is a new
+  // logical write, not a retry of the old one.
+  const idempotencyKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    idempotencyKeyRef.current = null;
+  }, [siteId, materialId, quantity, recordType]);
+
   const siteName = (id: string) => sites.find((s) => s.id === id)?.name ?? id;
   const materialById = (id: string) => materials.find((m) => m.id === id);
 
@@ -126,17 +136,28 @@ function StockPageInner() {
   async function submitRecord() {
     setError(null);
     setSubmitting(true);
+    if (!idempotencyKeyRef.current) {
+      idempotencyKeyRef.current = crypto.randomUUID();
+    }
     try {
       await api.post(`/stock/${recordType}`, {
         siteId,
         materialId,
         quantity: Number(quantity),
         remarks: remarks || undefined,
+        idempotencyKey: idempotencyKeyRef.current,
       });
+      // Success — clear the key so the *next* submit (new form values, or
+      // the same values resubmitted deliberately) gets a fresh identity.
+      idempotencyKeyRef.current = null;
       setQuantity("");
       setRemarks("");
       await loadAll();
     } catch (err) {
+      // Do NOT clear the key here — a retry of this same failed attempt
+      // must reuse it, or a request that actually succeeded server-side
+      // but whose response was lost (timeout, dropped connection) would
+      // get double-posted on retry.
       setError(err instanceof ApiError ? err.message : "Something went wrong");
     } finally {
       setSubmitting(false);

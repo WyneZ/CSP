@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
 import { useRequireAuth } from "@/lib/session-context";
@@ -33,6 +33,16 @@ export default function RequisitionDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // Phase A: one idempotency key per issue attempt across all lines in this
+  // submit (the API derives a per-line key from it — see
+  // requisitions.service.ts). Reset whenever the entered quantities change,
+  // so editing and resubmitting is a new attempt, not a retry of the old
+  // one.
+  const issueIdempotencyKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    issueIdempotencyKeyRef.current = null;
+  }, [issueQtys]);
+
   async function load() {
     const r = await api.get<RequisitionDetail>(`/requisitions/${id}`);
     setRequisition(r);
@@ -44,11 +54,12 @@ export default function RequisitionDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, id]);
 
-  async function run(action: () => Promise<unknown>) {
+  async function run(action: () => Promise<unknown>, onSuccess?: () => void) {
     setError(null);
     setBusy(true);
     try {
       await action();
+      onSuccess?.();
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong");
@@ -188,15 +199,29 @@ export default function RequisitionDetailPage() {
         {(r.status === "APPROVED" || r.status === "PARTIALLY_ISSUED") && canIssue && (
           <button
             disabled={busy}
-            onClick={() =>
-              run(() =>
-                api.post(`/requisitions/${id}/issue`, {
-                  lines: r.lines
-                    .filter((l) => Number(issueQtys[l.id] ?? 0) > 0)
-                    .map((l) => ({ lineId: l.id, quantity: Number(issueQtys[l.id]) })),
-                }),
-              )
-            }
+            onClick={() => {
+              if (!issueIdempotencyKeyRef.current) {
+                issueIdempotencyKeyRef.current = crypto.randomUUID();
+              }
+              run(
+                () =>
+                  api.post(`/requisitions/${id}/issue`, {
+                    idempotencyKey: issueIdempotencyKeyRef.current,
+                    lines: r.lines
+                      .filter((l) => Number(issueQtys[l.id] ?? 0) > 0)
+                      .map((l) => ({ lineId: l.id, quantity: Number(issueQtys[l.id]) })),
+                  }),
+                // Success clears the key and the entered quantities — the
+                // next Issue click (partial-then-remainder, or a fresh
+                // mistake correction) is a new attempt with a new identity.
+                // On failure the key is kept so a retry of this same click
+                // is recognized as the same attempt, not double-posted.
+                () => {
+                  issueIdempotencyKeyRef.current = null;
+                  setIssueQtys({});
+                },
+              );
+            }}
             className="rounded-lg bg-warning px-3 py-2 text-sm font-medium text-white"
           >
             Issue
