@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { prisma, Prisma, RequisitionStatus } from '@csp-erp/db';
+import type { Requisition, RequisitionLine } from '@csp-erp/db';
 import type {
   ApproveRequisitionInput,
   CreateRequisitionInput,
@@ -12,6 +13,64 @@ import type {
   RejectRequisitionInput,
 } from '@csp-erp/schemas';
 import { StockService } from '../stock/stock.service';
+import { computeIssuedStatus } from './requisition-status.util';
+
+type RequisitionWithLines = Requisition & { lines: RequisitionLine[] };
+
+// Phase B backend prerequisite (requisition create idempotency,
+// 2026-09-11): mirrors stock.service.ts's matchesLogicalRequest /
+// assertReplayOrConflict / isIdempotencyKeyConflict exactly, applied to a
+// Requisition + its lines instead of one StockMovement. "Logical request"
+// = every field the client actually controls on create() today: siteId,
+// remarks, and the line set (materialId + requestedQty per line, order-
+// independent). There is no `purpose` or `neededBy` field on the current
+// domain model -- only `remarks` exists as free text -- so this
+// fingerprint cannot and does not account for a needed-by date at all.
+// That is a real, separate schema gap (Phase 2 UX spec flags it), not
+// something silently invented here.
+function normalizeLines(
+  lines: { materialId: string; requestedQty: Prisma.Decimal | number }[],
+) {
+  return [...lines]
+    .map((l) => ({
+      materialId: l.materialId,
+      requestedQty: new Prisma.Decimal(l.requestedQty).toString(),
+    }))
+    .sort((a, b) => a.materialId.localeCompare(b.materialId));
+}
+
+function matchesLogicalCreateRequest(
+  existing: RequisitionWithLines,
+  input: CreateRequisitionInput,
+): boolean {
+  if (existing.siteId !== input.siteId) return false;
+  if ((existing.remarks ?? null) !== (input.remarks ?? null)) return false;
+  const a = normalizeLines(existing.lines);
+  const b = normalizeLines(input.lines);
+  if (a.length !== b.length) return false;
+  return a.every(
+    (line, i) => line.materialId === b[i].materialId && line.requestedQty === b[i].requestedQty,
+  );
+}
+
+function assertCreateReplayOrConflict(
+  existing: RequisitionWithLines,
+  input: CreateRequisitionInput,
+): RequisitionWithLines {
+  if (matchesLogicalCreateRequest(existing, input)) return existing; // true replay
+  throw new ConflictException(
+    `Idempotency key already used for a different requisition request (site/remarks/lines don't match the original)`,
+  );
+}
+
+function isIdempotencyKeyConflict(err: unknown): boolean {
+  return (
+    err instanceof Prisma.PrismaClientKnownRequestError &&
+    err.code === 'P2002' &&
+    Array.isArray((err.meta as { target?: unknown })?.target) &&
+    ((err.meta as { target: string[] }).target).includes('idempotencyKey')
+  );
+}
 
 @Injectable()
 export class RequisitionsService {
@@ -39,23 +98,53 @@ export class RequisitionsService {
     return requisition;
   }
 
-  create(tenantId: string, userId: string, input: CreateRequisitionInput) {
-    return prisma.requisition.create({
-      data: {
-        tenantId,
-        siteId: input.siteId,
-        remarks: input.remarks,
-        requestedById: userId,
-        createdById: userId,
-        updatedById: userId,
-        lines: {
-          create: input.lines.map((line) => ({
-            materialId: line.materialId,
-            requestedQty: line.requestedQty,
-          })),
-        },
-      },
+  private findByIdempotencyKey(
+    tenantId: string,
+    idempotencyKey: string | undefined,
+    client: Prisma.TransactionClient | typeof prisma,
+  ) {
+    if (!idempotencyKey) return Promise.resolve(null);
+    return client.requisition.findFirst({
+      where: { tenantId, idempotencyKey },
       include: { lines: true },
+    });
+  }
+
+  async create(tenantId: string, userId: string, input: CreateRequisitionInput) {
+    return prisma.$transaction(async (tx) => {
+      const existing = await this.findByIdempotencyKey(tenantId, input.idempotencyKey, tx);
+      if (existing) return assertCreateReplayOrConflict(existing, input);
+
+      try {
+        return await tx.requisition.create({
+          data: {
+            tenantId,
+            siteId: input.siteId,
+            remarks: input.remarks,
+            requestedById: userId,
+            createdById: userId,
+            updatedById: userId,
+            idempotencyKey: input.idempotencyKey,
+            lines: {
+              create: input.lines.map((line) => ({
+                materialId: line.materialId,
+                requestedQty: line.requestedQty,
+              })),
+            },
+          },
+          include: { lines: true },
+        });
+      } catch (err) {
+        if (isIdempotencyKeyConflict(err)) {
+          // Lost a race to a concurrent request using the same key --
+          // check whether it was truly the same request (replay) or a
+          // genuine conflict (different request, same key) before
+          // returning. Same pattern as StockService.recordReceipt.
+          const winner = await this.findByIdempotencyKey(tenantId, input.idempotencyKey, tx);
+          if (winner) return assertCreateReplayOrConflict(winner, input);
+        }
+        throw err;
+      }
     });
   }
 
@@ -222,24 +311,32 @@ export class RequisitionsService {
         );
       }
 
+      // Phase B: shares its status-recompute rule with StockService
+      // .undoMovement() via computeIssuedStatus -- one place this
+      // state-machine decision is made, not two copies that could drift.
+      // Behavior here is unchanged from before: issue() only ever
+      // increases issued quantities, so computeIssuedStatus's "nothing
+      // issued -> APPROVED" branch can never actually trigger from this
+      // call site (it can only be reached via an undo) -- verified by the
+      // pre-existing tests below still passing unchanged.
       const freshLines = await tx.requisitionLine.findMany({ where: { requisitionId: id } });
-      let allFullyIssued = true;
-      for (const line of freshLines) {
-        if (!line.approvedQty) continue;
-        const agg = await tx.stockMovement.aggregate({
-          where: { requisitionLineId: line.id },
-          _sum: { quantity: true },
-        });
-        const issuedSoFar = agg._sum.quantity ?? new Prisma.Decimal(0);
-        if (issuedSoFar.lessThan(line.approvedQty)) {
-          allFullyIssued = false;
-        }
-      }
+      const linesForStatus = await Promise.all(
+        freshLines.map(async (line) => {
+          const agg = await tx.stockMovement.aggregate({
+            where: { requisitionLineId: line.id },
+            _sum: { quantity: true },
+          });
+          return {
+            approvedQty: line.approvedQty,
+            issuedQty: agg._sum.quantity ?? new Prisma.Decimal(0),
+          };
+        }),
+      );
 
       return tx.requisition.update({
         where: { id },
         data: {
-          status: allFullyIssued ? RequisitionStatus.ISSUED : RequisitionStatus.PARTIALLY_ISSUED,
+          status: computeIssuedStatus(linesForStatus),
           updatedById: userId,
         },
         include: { lines: true },
