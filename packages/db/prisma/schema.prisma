@@ -250,6 +250,21 @@ model Requisition {
 
   remarks String?
 
+  // Phase B backend prerequisite (2026-09-11): mirrors
+  // StockMovement.idempotencyKey exactly -- client-generated dedup key so
+  // a retried "Submit" after a timeout/lost-response replays the original
+  // requisition instead of creating a second one. Nullable, and multiple
+  // NULLs are allowed under the unique index below (Postgres treats
+  // NULL <> NULL), so keyless creates behave exactly as before this field
+  // existed. See RequisitionsService.create() for the replay/conflict
+  // logic -- the "logical request" it compares against is siteId +
+  // remarks + the normalized line set. There is no `purpose` or
+  // `neededBy` field on this model yet (Phase 2 UX spec flags this as a
+  // real, separate schema gap), so the idempotency check cannot and does
+  // not cover a needed-by date -- documented here rather than silently
+  // assumed.
+  idempotencyKey String?
+
   lines RequisitionLine[]
 
   createdAt   DateTime @default(now())
@@ -260,6 +275,7 @@ model Requisition {
   updatedBy   User?    @relation("RequisitionUpdatedBy", fields: [updatedById], references: [id])
 
   @@index([tenantId, siteId, status])
+  @@unique([tenantId, idempotencyKey])
   @@map("requisition")
 }
 
