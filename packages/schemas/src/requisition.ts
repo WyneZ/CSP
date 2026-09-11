@@ -32,6 +32,10 @@ export const rejectRequisitionSchema = z.object({
 export type RejectRequisitionInput = z.infer<typeof rejectRequisitionSchema>;
 
 export const issueRequisitionSchema = z.object({
+  // Phase A: one key per issue *attempt* (covers the whole multi-line
+  // submit). The service derives a per-line key from this so each line's
+  // StockMovement gets its own dedup identity — see requisitions.service.ts.
+  idempotencyKey: z.string().uuid().optional(),
   lines: z
     .array(
       z.object({
