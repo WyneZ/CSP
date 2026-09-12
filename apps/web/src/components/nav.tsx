@@ -36,6 +36,31 @@ function StockIcon({ active }: { active: boolean }) {
   );
 }
 
+// New Requisition -- a document with a plus, distinct from the generic
+// "Requisitions" module link icon (there wasn't one before; this is the
+// only genuinely new icon Phase 2 needed, since the spec requires a
+// direct bottom-nav entry point into Screen 1).
+function NewRequisitionIcon({ active }: { active: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth={active ? 1.85 : 1.75} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M7 3.5h7l4 4V19a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 19V5a1.5 1.5 0 0 1 1-1.5Z" />
+      <path d="M14 3.5V7a1 1 0 0 0 1 1h3.5" />
+      <path d="M12 12v5M9.5 14.5h5" />
+    </svg>
+  );
+}
+
+// Requests (My Requisitions) -- a simple checklist, reused as the Site
+// Engineer's dedicated entry into Screen 3.
+function RequestsIcon({ active }: { active: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth={active ? 1.85 : 1.75} strokeLinecap="round" strokeLinejoin="round">
+      <rect x="5" y="3.5" width="14" height="17" rx="1.5" />
+      <path d="M8.5 8.5h7M8.5 12h7M8.5 15.5h4.5" />
+    </svg>
+  );
+}
+
 function MoreIcon() {
   return (
     <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round">
@@ -57,6 +82,13 @@ export function Nav() {
 
   const isHome = pathname === "/";
   const isStock = pathname.startsWith("/stock");
+  // Site Engineer gets two extra role-specific bottom-tab destinations
+  // (Phase 2 spec: Screen 1 and Screen 3 are both entered "via the
+  // existing role-specific bottom nav"). Every other role's nav is
+  // untouched -- this is additive, not a redesign of the shared bar.
+  const isSiteEngineer = user.role === "SITE_ENGINEER";
+  const isNewRequisition = pathname === "/requisitions/new";
+  const isRequests = pathname === "/requisitions" && isSiteEngineer;
   const initials = user.name
     .split(" ")
     .map((p) => p[0])
@@ -150,7 +182,9 @@ export function Nav() {
         </div>
       )}
 
-      {/* Mobile bottom tab bar */}
+      {/* Mobile bottom tab bar -- Site Engineer sees two extra destinations
+          (New Requisition, Requests) alongside the same Home/Stock/More
+          every role already has; no role loses a destination. */}
       <div className="fixed inset-x-0 bottom-0 z-30 flex h-16 items-center justify-around border-t border-border bg-card md:hidden">
         <Link href="/" className="flex flex-col items-center gap-1" style={{ color: isHome ? "var(--accent)" : "var(--muted-2)" }}>
           <HomeIcon active={isHome} />
@@ -160,6 +194,26 @@ export function Nav() {
           <StockIcon active={isStock} />
           <span className={`text-[11px] ${isStock ? "font-semibold" : "font-medium"}`}>Stock</span>
         </Link>
+        {isSiteEngineer && (
+          <>
+            <Link
+              href="/requisitions/new"
+              className="flex flex-col items-center gap-1"
+              style={{ color: isNewRequisition ? "var(--accent)" : "var(--muted-2)" }}
+            >
+              <NewRequisitionIcon active={isNewRequisition} />
+              <span className={`text-[11px] ${isNewRequisition ? "font-semibold" : "font-medium"}`}>New Request</span>
+            </Link>
+            <Link
+              href="/requisitions"
+              className="flex flex-col items-center gap-1"
+              style={{ color: isRequests ? "var(--accent)" : "var(--muted-2)" }}
+            >
+              <RequestsIcon active={isRequests} />
+              <span className={`text-[11px] ${isRequests ? "font-semibold" : "font-medium"}`}>Requests</span>
+            </Link>
+          </>
+        )}
         <button
           onClick={() => setMoreOpen((v) => !v)}
           className="flex flex-col items-center gap-1"
