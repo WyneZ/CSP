@@ -132,7 +132,7 @@ export function Nav() {
             </span>
             <button
               onClick={handleLogout}
-              className="rounded border border-border px-2 py-1 text-xs hover:bg-chip"
+              className="rounded-lg border border-border px-2 py-1 text-xs hover:bg-chip"
             >
               Log out
             </button>
@@ -185,43 +185,45 @@ export function Nav() {
       {/* Mobile bottom tab bar -- Site Engineer sees two extra destinations
           (New Requisition, Requests) alongside the same Home/Stock/More
           every role already has; no role loses a destination. */}
-      <div className="fixed inset-x-0 bottom-0 z-30 flex h-16 items-center justify-around border-t border-border bg-card md:hidden">
-        <Link href="/" className="flex flex-col items-center gap-1" style={{ color: isHome ? "var(--accent)" : "var(--muted-2)" }}>
-          <HomeIcon active={isHome} />
-          <span className={`text-[11px] ${isHome ? "font-semibold" : "font-medium"}`}>Home</span>
-        </Link>
-        <Link href="/stock" className="flex flex-col items-center gap-1" style={{ color: isStock ? "var(--accent)" : "var(--muted-2)" }}>
-          <StockIcon active={isStock} />
-          <span className={`text-[11px] ${isStock ? "font-semibold" : "font-medium"}`}>Stock</span>
-        </Link>
-        {isSiteEngineer && (
-          <>
-            <Link
-              href="/requisitions/new"
-              className="flex flex-col items-center gap-1"
-              style={{ color: isNewRequisition ? "var(--accent)" : "var(--muted-2)" }}
-            >
-              <NewRequisitionIcon active={isNewRequisition} />
-              <span className={`text-[11px] ${isNewRequisition ? "font-semibold" : "font-medium"}`}>New Request</span>
-            </Link>
-            <Link
-              href="/requisitions"
-              className="flex flex-col items-center gap-1"
-              style={{ color: isRequests ? "var(--accent)" : "var(--muted-2)" }}
-            >
-              <RequestsIcon active={isRequests} />
-              <span className={`text-[11px] ${isRequests ? "font-semibold" : "font-medium"}`}>Requests</span>
-            </Link>
-          </>
-        )}
-        <button
-          onClick={() => setMoreOpen((v) => !v)}
-          className="flex flex-col items-center gap-1"
-          style={{ color: "var(--muted-2)" }}
-        >
-          <MoreIcon />
-          <span className="text-[11px] font-medium">More</span>
-        </button>
+      <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-card pb-[env(safe-area-inset-bottom)] md:hidden">
+        <div className="flex h-16">
+          <Link href="/" className="flex h-full flex-1 flex-col items-center justify-center gap-1" style={{ color: isHome ? "var(--accent)" : "var(--muted-2)" }}>
+            <HomeIcon active={isHome} />
+            <span className={`text-[11px] ${isHome ? "font-semibold" : "font-medium"}`}>Home</span>
+          </Link>
+          <Link href="/stock" className="flex h-full flex-1 flex-col items-center justify-center gap-1" style={{ color: isStock ? "var(--accent)" : "var(--muted-2)" }}>
+            <StockIcon active={isStock} />
+            <span className={`text-[11px] ${isStock ? "font-semibold" : "font-medium"}`}>Stock</span>
+          </Link>
+          {isSiteEngineer && (
+            <>
+              <Link
+                href="/requisitions/new"
+                className="flex h-full flex-1 flex-col items-center justify-center gap-1"
+                style={{ color: isNewRequisition ? "var(--accent)" : "var(--muted-2)" }}
+              >
+                <NewRequisitionIcon active={isNewRequisition} />
+                <span className={`text-[11px] ${isNewRequisition ? "font-semibold" : "font-medium"}`}>New Request</span>
+              </Link>
+              <Link
+                href="/requisitions"
+                className="flex h-full flex-1 flex-col items-center justify-center gap-1"
+                style={{ color: isRequests ? "var(--accent)" : "var(--muted-2)" }}
+              >
+                <RequestsIcon active={isRequests} />
+                <span className={`text-[11px] ${isRequests ? "font-semibold" : "font-medium"}`}>Requests</span>
+              </Link>
+            </>
+          )}
+          <button
+            onClick={() => setMoreOpen((v) => !v)}
+            className="flex h-full flex-1 flex-col items-center justify-center gap-1"
+            style={{ color: "var(--muted-2)" }}
+          >
+            <MoreIcon />
+            <span className="text-[11px] font-medium">More</span>
+          </button>
+        </div>
       </div>
     </>
   );

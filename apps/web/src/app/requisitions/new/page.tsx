@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
 import { useRequireAuth } from "@/lib/session-context";
 import { requisitionRef } from "@/lib/format";
+import { StatusBadge } from "@/components/status-badge";
 
 type Site = { id: string; name: string };
 type Material = { id: string; code: string; name: string; unit: string };
@@ -282,9 +283,7 @@ export default function NewRequisitionPage() {
         <div className="flex flex-col gap-2 rounded-2xl border border-border bg-card p-4">
           <div className="flex items-center justify-between">
             <span className="font-mono text-sm font-bold">{requisitionRef(created.id)}</span>
-            <span className="inline-flex w-fit items-center rounded-full bg-chip px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-muted-2">
-              Pending Approval
-            </span>
+            <StatusBadge status={created.status} />
           </div>
           <p className="text-xs text-muted">
             Submitted {new Date(created.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} &middot;{" "}
@@ -378,7 +377,7 @@ export default function NewRequisitionPage() {
   const showMultiSite = sites.length > 1;
 
   return (
-    <div className="flex flex-col gap-5 pb-6">
+    <div className="flex flex-col gap-5 pb-16 md:mx-auto md:max-w-2xl md:pb-6">
       <h1 className="text-xl font-bold">New Requisition</h1>
 
       {/* Backend/domain gap, not silently papered over: there is no
@@ -452,7 +451,7 @@ export default function NewRequisitionPage() {
               <label className="flex flex-col gap-1.5 text-sm font-medium text-muted-2">
                 Requested quantity
                 <div
-                  className="flex h-14 items-center gap-2 rounded-[10px] border-[1.5px] bg-card px-3.5"
+                  className="flex h-14 items-center gap-2 rounded-[10px] border-[1.5px] bg-card px-3.5 focus-within:ring-2 focus-within:ring-accent/30"
                   style={{ borderColor: err.qtyInvalid ? "var(--danger)" : "var(--border)" }}
                 >
                   <input
@@ -500,7 +499,7 @@ export default function NewRequisitionPage() {
           onChange={(e) => setPurpose(e.target.value)}
           rows={2}
           placeholder="What is this material for?"
-          className="rounded-[10px] border-[1.5px] bg-card px-3.5 py-3 text-[16px] outline-none disabled:opacity-60"
+          className="rounded-[10px] border-[1.5px] bg-card px-3.5 py-3 text-[16px] outline-none focus:ring-2 focus:ring-accent/30 disabled:opacity-60"
           style={{ borderColor: purposeInvalid ? "var(--danger)" : "var(--border)" }}
         />
       </label>
@@ -508,13 +507,15 @@ export default function NewRequisitionPage() {
 
       {generalError && view === "form" && <p className="text-sm text-danger">{generalError}</p>}
 
-      <button
-        onClick={attemptSubmit}
-        disabled={submitting || (touchedSubmit && !canSubmit)}
-        className="sticky bottom-20 flex h-14 items-center justify-center rounded-[10px] bg-accent text-[16px] font-semibold text-accent-foreground disabled:opacity-40 md:static md:self-start md:px-6"
-      >
-        {submitting ? "Submitting…" : "Submit for approval"}
-      </button>
+      <div className="fixed inset-x-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-20 border-t border-border bg-card p-4 md:static md:border-0 md:bg-transparent md:p-0">
+        <button
+          onClick={attemptSubmit}
+          disabled={submitting || (touchedSubmit && !canSubmit)}
+          className="flex h-14 w-full items-center justify-center rounded-[10px] bg-accent text-[16px] font-semibold text-accent-foreground disabled:opacity-40 md:w-auto md:self-start md:px-6"
+        >
+          {submitting ? "Submitting…" : "Submit for approval"}
+        </button>
+      </div>
     </div>
   );
 }

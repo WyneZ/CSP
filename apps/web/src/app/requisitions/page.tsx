@@ -247,7 +247,7 @@ function MyRequisitionsView({ user }: { user: { id: string; role: string } }) {
   }
 
   return (
-    <div className="flex flex-col gap-4 pb-6">
+    <div className="flex flex-col gap-4 pb-16 md:mx-auto md:max-w-2xl md:pb-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">My Requisitions</h1>
         <button
@@ -258,17 +258,14 @@ function MyRequisitionsView({ user }: { user: { id: string; role: string } }) {
         </button>
       </div>
 
-      <div className="flex gap-2">
+      <div className="flex gap-1.5 rounded-[10px] bg-chip p-1">
         {(["active", "all"] as const).map((f) => (
           <button
             key={f}
             onClick={() => setFilter(f)}
-            className="rounded-full px-3.5 py-1.5 text-sm font-semibold"
-            style={
-              filter === f
-                ? { background: "var(--accent-tint)", color: "var(--accent)" }
-                : { background: "var(--chip)", color: "var(--muted-2)" }
-            }
+            className={`h-11 flex-1 rounded-lg text-[13px] font-semibold transition-colors ${
+              filter === f ? "bg-accent text-accent-foreground" : "text-muted hover:text-foreground"
+            }`}
           >
             {f === "active" ? "Active" : "All"}
           </button>
@@ -332,12 +329,14 @@ function MyRequisitionsView({ user }: { user: { id: string; role: string } }) {
         </div>
       )}
 
-      <button
-        onClick={() => router.push("/requisitions/new")}
-        className="sticky bottom-20 flex h-14 items-center justify-center rounded-[10px] bg-accent text-[16px] font-semibold text-accent-foreground md:hidden"
-      >
-        New Requisition
-      </button>
+      <div className="fixed inset-x-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-20 border-t border-border bg-card p-4 md:hidden">
+        <button
+          onClick={() => router.push("/requisitions/new")}
+          className="flex h-14 w-full items-center justify-center rounded-[10px] bg-accent text-[16px] font-semibold text-accent-foreground"
+        >
+          New Requisition
+        </button>
+      </div>
 
       <ConfirmDialog
         open={!!cancelTarget}

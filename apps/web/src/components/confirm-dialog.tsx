@@ -54,7 +54,7 @@ export function ConfirmDialog({
   return (
     <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title">
       <div className="absolute inset-0 bg-black/30" onClick={busy ? undefined : onCancel} />
-      <div className="absolute inset-x-0 bottom-0 flex flex-col gap-3 rounded-t-2xl border-t border-border bg-card p-5 shadow-lg sm:inset-x-auto sm:bottom-auto sm:left-1/2 sm:top-1/2 sm:w-full sm:max-w-sm sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-2xl sm:border">
+      <div className="absolute inset-x-0 bottom-0 flex flex-col gap-3 rounded-t-2xl border-t border-border bg-card p-5 shadow-lg md:inset-x-auto md:bottom-auto md:left-1/2 md:top-1/2 md:w-full md:max-w-sm md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-2xl md:border">
         <h2 id="confirm-dialog-title" className="text-base font-bold">
           {title}
         </h2>

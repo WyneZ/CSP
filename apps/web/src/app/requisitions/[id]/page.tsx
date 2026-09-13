@@ -266,7 +266,7 @@ export default function RequisitionDetailPage() {
   const showLegacySubmit = canRequest && r.status === "DRAFT";
 
   return (
-    <div className="flex flex-col gap-6 pb-10">
+    <div className="flex flex-col gap-6 pb-10 md:mx-auto md:max-w-2xl">
       {/* 1. Reference + status */}
       <div className="flex items-center justify-between gap-2">
         <span className="font-mono text-base font-bold">{requisitionRef(r.id)}</span>
@@ -304,25 +304,31 @@ export default function RequisitionDetailPage() {
 
             <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
               <span className="text-muted-2">Requested</span>
-              <span className="text-right font-mono font-semibold">
-                {formatQty(requested)} {line.material.unit}
+              <span className="text-right font-mono text-sm font-semibold">
+                {formatQty(requested)} <span className="text-xs font-medium text-muted">{line.material.unit}</span>
               </span>
 
               <span className="text-muted-2">Approved</span>
-              <span className="text-right font-mono font-semibold">
-                {approved === null ? "—" : `${formatQty(approved)} ${line.material.unit}`}
+              <span className="text-right font-mono text-sm font-semibold">
+                {approved === null ? (
+                  "—"
+                ) : (
+                  <>
+                    {formatQty(approved)} <span className="text-xs font-medium text-muted">{line.material.unit}</span>
+                  </>
+                )}
               </span>
 
               {approved !== null && (
                 <>
                   <span className="text-muted-2">Already issued</span>
-                  <span className="text-right font-mono font-semibold">
-                    {formatQty(issued)} {line.material.unit}
+                  <span className="text-right font-mono text-sm font-semibold">
+                    {formatQty(issued)} <span className="text-xs font-medium text-muted">{line.material.unit}</span>
                   </span>
 
                   <span className="text-muted-2">Remaining</span>
-                  <span className="text-right font-mono font-semibold">
-                    {formatQty(remaining ?? 0)} {line.material.unit}
+                  <span className="text-right font-mono text-base font-bold">
+                    {formatQty(remaining ?? 0)} <span className="text-xs font-medium text-muted">{line.material.unit}</span>
                   </span>
                 </>
               )}
@@ -335,8 +341,8 @@ export default function RequisitionDetailPage() {
                 spec warns against. */}
             <div className="flex items-center justify-between border-t border-border-soft pt-2 text-sm">
               <span className="text-muted-2">Available stock</span>
-              <span className="font-mono font-semibold">
-                {formatQty(available)} {line.material.unit}
+              <span className="font-mono text-sm font-semibold">
+                {formatQty(available)} <span className="text-xs font-medium text-muted">{line.material.unit}</span>
               </span>
             </div>
 
@@ -365,7 +371,7 @@ export default function RequisitionDetailPage() {
                   step="any"
                   value={approveQtys[line.id] ?? ""}
                   onChange={(e) => setApproveQtys((prev) => ({ ...prev, [line.id]: e.target.value }))}
-                  className="h-12 rounded-[10px] border-[1.5px] border-border bg-card px-3.5 font-mono text-base font-bold outline-none focus:border-accent"
+                  className="h-14 rounded-[10px] border-[1.5px] border-border bg-card px-3.5 font-mono text-base font-bold outline-none focus:border-accent"
                 />
               </label>
             )}
@@ -373,7 +379,7 @@ export default function RequisitionDetailPage() {
             {showIssueArea && (
               <label className="flex flex-col gap-1.5 text-sm font-medium text-muted-2">
                 Issue now
-                <div className="flex h-14 items-center gap-2 rounded-[10px] border-[1.5px] border-border bg-card px-3.5">
+                <div className="flex h-14 items-center gap-2 rounded-[10px] border-[1.5px] border-border bg-card px-3.5 focus-within:border-accent">
                   <input
                     type="number"
                     inputMode="decimal"
@@ -416,14 +422,14 @@ export default function RequisitionDetailPage() {
               className="flex h-14 items-center justify-center rounded-[10px] text-[16px] font-semibold text-white disabled:opacity-40"
               style={{ background: "var(--success)" }}
             >
-              Approve
+              {busy ? "Approving…" : "Approve"}
             </button>
             <button
               disabled={busy}
               onClick={() => setRejectOpen(true)}
               className="flex h-14 items-center justify-center rounded-[10px] border border-border text-[16px] font-semibold text-danger disabled:opacity-40"
             >
-              Reject
+              {busy ? "Rejecting…" : "Reject"}
             </button>
           </div>
         )}
@@ -435,10 +441,24 @@ export default function RequisitionDetailPage() {
             className="flex h-14 items-center justify-center rounded-[10px] text-[16px] font-semibold text-white disabled:opacity-40"
             style={{ background: "var(--warning)" }}
           >
-            Issue
+            {busy ? "Issuing…" : "Issue"}
           </button>
         )}
       </div>
+
+      {/* 7. Cancel, when eligible -- placed directly below the action
+          area and above Activity History per the Phase 2 visual
+          refinement decision package (DOM/layout reorder only, no
+          permission or behavior change). */}
+      {showCancel && (
+        <button
+          disabled={busy}
+          onClick={() => setCancelOpen(true)}
+          className="self-start text-sm font-semibold text-danger disabled:opacity-40"
+        >
+          Cancel request
+        </button>
+      )}
 
       {/* 6. Activity history */}
       <div className="flex flex-col gap-1">
@@ -453,21 +473,10 @@ export default function RequisitionDetailPage() {
         </div>
       </div>
 
-      {/* 7. Cancel, when eligible */}
-      {showCancel && (
-        <button
-          disabled={busy}
-          onClick={() => setCancelOpen(true)}
-          className="self-start text-sm font-semibold text-danger disabled:opacity-40"
-        >
-          Cancel request
-        </button>
-      )}
-
       <ConfirmDialog
         open={approveConfirmOpen}
         title="Approve with limited stock?"
-        message={`Stock is currently below the requested quantity on ${insufficientCount} line${
+        message={`${requisitionRef(r.id)} — stock is currently below the requested quantity on ${insufficientCount} line${
           insufficientCount === 1 ? "" : "s"
         }. You can approve now — the storekeeper will issue what's available, and the rest stays open until more stock arrives.`}
         confirmLabel="Approve anyway"
